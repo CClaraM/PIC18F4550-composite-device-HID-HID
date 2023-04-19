@@ -1,0 +1,665 @@
+'****************************************************************
+'*  Name    : UNTITLED.BAS                                      *
+'*  Author  : [select VIEW...EDITOR OPTIONS]                    *
+'*  Notice  : Copyright (c) 2021 [select VIEW...EDITOR OPTIONS] *
+'*          : All Rights Reserved                               *
+'*  Date    : 5/10/2021                                         *
+'*  Version : 1.0                                               *
+'*  Notes   :                                                   *
+'*          :                                                   *
+'****************************************************************
+#CONFIG
+    CONFIG  PLLDIV = 5            ; Divide by 5 (20 MHz oscillator input)
+    CONFIG  CPUDIV = OSC1_PLL2	  ;[Primary Oscillator Src: /1][96 MHz PLL Src: /2]
+    CONFIG  USBDIV = 2            ; USB clock source comes from the 96 MHz PLL divided by 2
+    CONFIG  FOSC = ECPLLIO_EC	  ; EC oscillator, PLL enabled, port function on RA6 (ECPIO)
+    CONFIG  FCMEN = OFF           ; Fail-Safe Clock Monitor disabled
+    CONFIG  IESO = OFF            ; Oscillator Switchover mode disabled
+    CONFIG  PWRT = OFF            ; PWRT disabled
+    CONFIG  BOR = ON              ; Brown-out Reset enabled in hardware only (SBOREN is disabled)
+    CONFIG  VREGEN = ON           ; USB voltage regulator enabled
+    CONFIG  WDT = ON              ; WDT enabled
+    CONFIG  WDTPS = 512           ; 1:512
+    CONFIG  PBADEN = OFF          ; PORTB<4:0> pins are configured as digital I/O on Reset
+    CONFIG  LPT1OSC = OFF         ; Timer1 configured for higher power operation
+    CONFIG  MCLRE = OFF	          ; RE3 input pin enabled; MCLR pin disabled
+    CONFIG  STVREN = ON           ; Stack full/underflow will cause Reset
+    CONFIG  LVP = OFF             ; Single-Supply ICSP disabled
+    CONFIG  ICPRT = ON            ; ICPORT enabled
+    CONFIG  CP0 = OFF             ; Block 0 (000800-001FFFh) is not code-protected
+    CONFIG  CP1 = OFF             ; Block 1 (002000-003FFFh) is not code-protected
+    CONFIG  CP2 = OFF             ; Block 2 (004000-005FFFh) is not code-protected
+    CONFIG  CP3 = OFF             ; Block 3 (006000-007FFFh) is not code-protected
+    
+#ENDCONFIG
+
+'Include the descriptor
+'Include "cdc_desc.bas"
+Include "DES_FirmAC01.bas"
+
+DEFINE OSC 48
+
+Define ADC_BITS     10  ' Set number of bits in result
+Define ADC_CLOCK     3  ' Set clock source (3=rc)
+Define ADC_SAMPLEUS 50  ' Set sampling time in uS
+
+' Set receive register to receiver enabled
+DEFINE HSER_RCSTA 90h 
+
+' Set transmit register to transmitter enabled
+DEFINE HSER_TXSTA 24h 
+
+' Set baud rate
+DEFINE HSER_BAUD 115200
+
+USBBufferSizeMax   con 8  ' maximum buffer size
+USBBufferSizeTX    con 11  ' output
+USBMediaTX         con 3
+USBkeyTX           con 8
+USBBufferSizeRX    con 8  ' input
+
+AllFlags        var byte        $60     ;Flags.0 = USB out 
+FunctionKeys    var byte        $61     ;IO Input State
+P1Keys          var word        $62     ;IO Input State
+P2Keys          var word        $64     ;IO Input State
+FKeytemp        var byte        $66     ;IO Input State Temp
+F1Keys          var word        $67     ;IO Input State Temp
+F2Keys          var word        $69     ;IO Input State Temp
+OUTPUTS0        var byte        $6B
+OUTPUTS1        var byte        $6C
+OUTPUTS2        var byte        $6D
+'********************************
+ANINPUT         VAR WORD        $6E     ;IO Analog Input State
+ANALOG0         var WORD        $70     ;IO Analog Input State
+ANALOG1         var WORD        $72     ;IO Analog Input State
+ANALOG2         var WORD        $74     ;IO Analog Input State
+ANALOG3         var WORD        $76     ;IO Analog Input State
+ANALOG4         var WORD        $78     ;IO Analog Input State
+ANALOG5         var WORD        $7A     ;IO Analog Input State
+ANALOG6         var WORD        $7C     ;IO Analog Input State
+ANALOG7         var WORD        $7E     ;IO Analog Input State
+ANTemp0         var word        $80     ;IO Analog Input State Temp
+ANTemp1         var word        $82     ;IO Analog Input State Temp
+ANTemp2         var word        $84     ;IO Analog Input State Temp
+ANTemp3         var word        $86     ;IO Analog Input State Temp
+ANTemp4         var word        $88     ;IO Analog Input State Temp
+ANTemp5         var word        $8A     ;IO Analog Input State Temp
+ANTemp6         var word        $8C     ;IO Analog Input State Temp
+ANTemp7         var word        $8E     ;IO Analog Input State Temp
+USBBuffer       Var Byte[10]    $90
+USBBufferCount  Var Byte        $9B
+IDTX            var byte        $9C
+Temp            var byte        $9D
+CHUTES0         var byte        $9E
+CHUTES1         var byte        $9F
+VConfig         var byte        $A0     ;commcounter,Autocounter,coinSlot1,coinSlot2,counter Enable 
+TRIGGER1        var byte        $A1
+TRIGGER2        var byte        $A2
+TIMER1          var byte        $A3
+TIMER2          var byte        $A4
+MEDIAK          var byte        $A5
+TMEDIAK         var byte        $A6
+i               var byte        $A7
+x               var byte        $A8
+y               var byte        $A9
+epTX            var byte        $AA
+POV1            var byte        $AB
+POV2            var byte        $AC
+COUNTS1         var bit
+COUNTS2         var bit
+
+TRISA =%10100011
+ADCON1=%00001101
+ADCON2=%10000000
+
+TRISB=%11111111
+TRISC=%10010010
+TRISD=%11110000
+TRISE=%0111
+PORTD=0
+PORTC=%100
+PORTA.6=0
+
+OUTPUTS0=0
+OUTPUTS1=0
+OUTPUTS2=0
+
+'on interrupt goto SerialIn
+'PIE1=%00100000
+'IPR1.5=1
+'PIE2=0
+'INTCON=%11000000        'On interrupciones generales and idem con perifericas
+
+
+RESET:
+clear
+LATC.0=1
+
+READ 1,CHUTES0
+READ 2,CHUTES1
+if CHUTES0=255 then CHUTES0=0 : write 1,CHUTES0
+if CHUTES1=255 then CHUTES1=0 : write 2,chutes1
+read 3,VConfig  ;commcounter,Autocounter,coinSlot1,coinSlot2,counter Enable 
+read 4,Temp
+
+if temp !="A" then
+    CHUTES0=0
+    CHUTES1=0
+    VConfig=%00011111
+    write 1,CHUTES0
+    write 2,CHUTES1
+    write 3,VConfig
+    write 4,"A"
+endif
+
+if VConfig.1=1 then outputs2.6=1 ;on coinSlot1
+if VConfig.2=1 then outputs2.7=1 ;on coinSlot2
+gosub wout
+
+USBInit
+                                     ' keep connection alive
+AllFlags.1=1
+AllFlags.2=1
+ANALOG1=32768
+ANALOG5=32768
+ANALOG7=32768
+ANALOG3=32768
+        
+ANALOG6=32768
+ANALOG0=32768
+ANALOG2=32768
+ANALOG4=32768
+
+MainLoop:
+                                                                                                                                    
+    GOSUB READIN
+    
+    if chutes0>0 or CHUTES1>0 then gosub COUNTER
+    
+    if AllFlags.0=1 then
+        AllFlags.0=0
+    endif
+    
+    if AllFlags.1=1 then
+        AllFlags.1=0
+        idtx=1
+        USBBuffer[0]=1
+        USBBuffer[1]=ANALOG1.lowbyte
+        USBBuffer[2]=ANALOG1.highbyte
+        USBBuffer[3]=ANALOG5.lowbyte
+        USBBuffer[4]=ANALOG5.highbyte
+        USBBuffer[5]=ANALOG7.lowbyte
+        USBBuffer[6]=ANALOG7.highbyte
+        USBBuffer[7]=ANALOG3.lowbyte
+        USBBuffer[8]=ANALOG3.highbyte
+                
+        Temp.0=FunctionKeys.0
+        Temp.1=FunctionKeys.3
+        Temp.2=P1Keys.0
+        Temp.3=P1Keys.5
+        Temp.4=P1Keys.6
+        Temp.5=P1Keys.7
+        Temp.6=P1Keys.8
+        Temp.7=P1Keys.9
+        
+        USBBuffer[9]=Temp;P1Keys.lowbyte
+        
+        Temp.0=P1Keys.10
+        Temp.1=P1Keys.1
+        Temp.2=P1Keys.2
+        Temp.3=P1Keys.3
+        Temp.4=P1Keys.4
+        Temp.5=0
+        Temp.6=0
+        Temp.7=0
+        
+        USBBuffer[10]=Temp;P1Keys.highbyte
+        gosub DoUSBOut
+    endif
+    
+    if AllFlags.2=1 then
+        AllFlags.2=0
+        idtx=1
+        USBBuffer[0]=2
+        USBBuffer[1]=ANALOG6.lowbyte
+        USBBuffer[2]=ANALOG6.highbyte
+        USBBuffer[3]=ANALOG0.lowbyte
+        USBBuffer[4]=ANALOG0.highbyte
+        USBBuffer[5]=ANALOG2.lowbyte
+        USBBuffer[6]=ANALOG2.highbyte
+        USBBuffer[7]=ANALOG4.lowbyte
+        USBBuffer[8]=ANALOG4.highbyte
+        
+        Temp.0=FunctionKeys.1
+        Temp.1=FunctionKeys.2
+        Temp.2=FunctionKeys.4
+        Temp.3=P2Keys.0
+        Temp.4=P2Keys.5
+        Temp.5=P2Keys.6
+        Temp.6=P2Keys.7
+        Temp.7=P2Keys.8
+        
+        USBBuffer[9]=Temp;P2Keys.lowbyte
+        
+        Temp.0=P2Keys.9
+        Temp.1=P2Keys.10
+        Temp.2=P2Keys.1
+        Temp.3=P2Keys.2
+        Temp.4=P2Keys.3
+        Temp.5=P2Keys.4
+        Temp.6=0
+        Temp.7=0
+        
+        USBBuffer[10]=Temp;P2Keys.highbyte
+        gosub DoUSBOut
+    endif
+    
+    if AllFlags.3=1 then
+        AllFlags.3=0
+        idtx=3 'Keyboard
+        for i=0  to 7
+            USBBuffer[i]=0
+        next i
+        x=2
+        if mediak.0=1 then USBBuffer[x]=41 : x=x+1
+        
+        if porta.5=1 then
+            if mediak.1=1 then USBBuffer[x]=82 : x=x+1
+            if mediak.2=1 then USBBuffer[x]=81 : x=x+1
+            if mediak.3=1 then USBBuffer[x]=80 : x=x+1
+            if mediak.4=1 then USBBuffer[x]=79 : x=x+1
+            if mediak.5=1 then USBBuffer[x]=40 : x=x+1
+        endif
+            
+        USBBuffer[0]=1
+        USBBuffer[1]=0
+        gosub DoUSBOut
+        
+        idtx=2
+        USBBuffer[0]=3
+        if mediak.6=1 then USBBuffer[1]=233
+        if mediak.7=1 then USBBuffer[1]=234
+        USBBuffer[2]=0
+        gosub DoUSBOut 
+    endif
+    
+    USBService
+goto mainloop
+
+;***************************************
+;*        Read Digital Inputs          *
+;***************************************
+READIN:
+    
+    ;pauseus 1 'HC257 PAUSEUS 1
+    'Player 2
+    FunctionKeys.1 = ~ PORTD.4   'service-
+    FunctionKeys.2 = ~ PORTD.5   'Tilt-
+    FunctionKeys.4 = ~ PORTD.6   'coin2-
+    P2Keys.0 = ~ PORTD.7   'start-
+    
+    P2Keys.1 = ~ PORTB.0   'up
+    P2Keys.2 = ~ PORTB.1   'down
+    P2Keys.3 = ~ PORTB.2   'left
+    P2Keys.4 = ~ PORTB.3   'right
+    
+    P2Keys.5 = ~ PORTB.4   'Button1-
+    P2Keys.6 = ~ PORTB.5   'Button2-
+    P2Keys.7 = ~ PORTB.6   'Button3-
+    P2Keys.8 = ~ PORTB.7   'Button4-
+    
+    P2Keys.9 = ~ PORTE.2   'Button5-
+    P2Keys.10 = ~ PORTE.1  'Button6-
+    MEDIAK.6 = ~ PORTE.0   'Key Vol+
+'    MEDIAK.0 = ~ PORTE.3   'Key
+    
+'********************************
+;         Digital input         *
+'********************************
+
+    LATA.4=1                     
+    pauseus 1 'HC257 PAUSEUS 1
+    'Player 1
+        
+    FunctionKeys.0 = ~ PORTD.4   'test-
+    FunctionKeys.3 = ~ PORTD.5   'coin1-
+    P1Keys.0 = ~ PORTD.6   'start-
+    P1Keys.1 = ~ PORTD.7   'up
+    
+    P1Keys.2 = ~ PORTB.0   'down
+    P1Keys.3 = ~ PORTB.1   'left
+    P1Keys.4 = ~ PORTB.2   'right
+    P1Keys.5 = ~ PORTB.3   'Button1
+    
+    MEDIAK.1 = ~ PORTD.7
+    MEDIAK.2 = ~ PORTB.0
+    MEDIAK.3 = ~ PORTB.1
+    MEDIAK.4 = ~ PORTB.2
+    MEDIAK.5 = ~ PORTB.3
+'******************************** 
+    P1Keys.6 = ~ PORTB.4   'Button2
+    P1Keys.7 = ~ PORTB.5   'Button3-
+    P1Keys.8 = ~ PORTB.6   'Button4-
+    P1Keys.9 = ~ PORTB.7   'Button5-
+    
+    P1Keys.10 = ~ PORTE.2  'Button6-
+
+    MEDIAK.0 = ~ PORTE.1   'key ESC   
+    MEDIAK.7 = ~ PORTE.0   'key Vol-
+'    MEDIAK.0 = ~ PORTE.3   'key
+    LATA.4=0
+
+    gosub RPOV
+    P1Keys.1=pov1.0
+    P1Keys.2=pov1.1
+    P1Keys.3=pov1.2
+    P1Keys.4=pov1.3
+    P2Keys.1=pov2.0
+    P2Keys.2=pov2.1
+    P2Keys.3=pov2.2
+    P2Keys.4=pov2.3
+    
+    'Counters rutine
+    if vconfig.3=1 and vconfig.0=1 then
+        if FunctionKeys.3=1 then trigger1 = trigger1 + 1
+        if FunctionKeys.3=0 and trigger1<6 then trigger1=0
+        if FunctionKeys.3=0 and trigger1>5 then trigger1=0 : CHUTES0=CHUTES0+1 : write 1,chutes0
+    
+        if FunctionKeys.4=1 then trigger2 = trigger2 + 1
+        if FunctionKeys.4=0 and trigger2<6 then trigger2=0
+        
+        if FunctionKeys.4=0 and trigger2>5 then
+            trigger2=0
+            if vconfig.4=1 then 
+                CHUTES0=CHUTES0+1
+                write 1,chutes0
+            else
+                CHUTES1=CHUTES1+1
+                write 2,chutes1
+            endif
+        endif
+    endif
+
+    if FKeytemp != FunctionKeys then        'Flag FunctionKeys
+        AllFlags.0=1
+        
+        if FunctionKeys.0 != FKeytemp.0 then        'Player 1 FunctionKeys
+            AllFlags.1=1
+            AllFlags.0=0
+        endif
+        if FunctionKeys.3 != FKeytemp.3 then        'Player 1 FunctionKeys
+            AllFlags.1=1
+            AllFlags.0=0
+        endif
+        
+        if FunctionKeys.1 != FKeytemp.1 then        'Player 2 FunctionKeys
+            AllFlags.2=1
+            AllFlags.0=0
+        endif
+        if FunctionKeys.2 != FKeytemp.2 then        'Player 2 FunctionKeys
+            AllFlags.2=1
+            AllFlags.0=0
+        endif
+        if FunctionKeys.4 != FKeytemp.4 then        'Player 2 FunctionKeys
+            AllFlags.2=1
+            AllFlags.0=0
+        endif
+        FKeytemp=FunctionKeys
+    endif
+    
+    if F1Keys != P1Keys then        'Flag Player 1
+        AllFlags.1=1
+        F1Keys = P1Keys
+    endif
+    if F2Keys != P2Keys then        'Flag Player 2
+        AllFlags.2=1
+        F2Keys = P2Keys
+    endif
+    
+    if TMEDIAK != MEDIAK then
+        AllFlags.3=1
+        TMEDIAK = MEDIAK
+    endif
+return
+
+'********************************
+;*        Anolog input          *
+'********************************
+READAN:
+
+    LATA.2=0
+    LATA.3=0
+    ADCIN 0, aninput
+    'aninput=aninput<<1
+    ANALOG0=aninput
+     
+    ADCIN 1, aninput
+    'aninput=aninput<<1
+    ANALOG1=aninput
+    
+    
+    LATA.2=1
+    LATA.3=0   
+    ADCIN 0, aninput
+    'aninput=aninput<<1
+    ANALOG2=aninput
+         
+    ADCIN 1, aninput
+    'aninput=aninput<<1
+    ANALOG3=aninput
+
+    LATA.2=0
+    LATA.3=1
+    ADCIN 0, aninput
+    'aninput=aninput<<1
+    ANALOG4=aninput
+         
+    ADCIN 1, aninput
+    'aninput=aninput<<1
+    ANALOG5=aninput
+    
+    LATA.2=1
+    LATA.3=1
+    ADCIN 0, aninput
+    'aninput=aninput<<1
+    ANALOG6=aninput
+         
+    ADCIN 1, aninput
+    'aninput=aninput<<1
+    ANALOG7=aninput
+    
+    if ANTemp0 != ANALOG0 then
+        AllFlags.2=1
+        ANTemp0=ANALOG0
+    endif
+    
+    if ANTemp1 != ANALOG1 then
+        AllFlags.1=1
+        ANTemp1=ANALOG1
+    endif
+    
+    if ANTemp2 != ANALOG2 then
+        AllFlags.2=1
+        ANTemp2=ANALOG2
+    endif
+    
+    if ANTemp3 != ANALOG3 then
+        AllFlags.1=1
+        ANTemp3=ANALOG3
+    endif
+    
+    if ANTemp4 != ANALOG4 then
+        AllFlags.2=1
+        ANTemp4=ANALOG4
+    endif
+    
+    if ANTemp5 != ANALOG5 then
+        AllFlags.1=1
+        ANTemp5=ANALOG5
+    endif
+    
+    if ANTemp6 != ANALOG6 then
+        AllFlags.2=1
+        ANTemp6=ANALOG6
+    endif
+    
+    if ANTemp7 != ANALOG7 then
+        AllFlags.1=1
+        ANTemp7=ANALOG7
+    endif
+   
+RETURN
+
+;********************************
+;*        Counter Rutine        *
+;********************************
+COUNTER:
+    if chutes0>0 and COUNTS1 = 0 then
+        OUTPUTS2.4=1'buffersalida 1 counter 1
+        gosub wout
+        COUNTS1 = 1
+        timer1=0
+    endif
+    
+    if COUNTS1=1 then
+        timer1=timer1+1
+        if timer1=40 then
+            OUTPUTS2.4=0'buffer 1 off
+            gosub wout
+        endif
+        if timer1>80 then timer1=0 :  COUNTS1=0 : chutes0 = chutes0 - 1 : write 1,CHUTES0
+    endif
+    
+    if chutes1>0 and COUNTS2 = 0 then
+        OUTPUTS2.5=1'buffersalida 1
+        gosub wout
+        COUNTS2 = 1
+        timer2=0
+    endif
+    
+    if COUNTS2=1 then
+        timer2=timer2+1
+        if timer2=40 then
+            OUTPUTS2.5=0'buffer 1 off
+            gosub wout
+        endif
+        if timer2>80 then timer2=0 :  COUNTS2=0 : chutes1 = chutes1 - 1 : write 2,CHUTES1
+    endif
+return
+
+;********************************
+;*                              *
+;******************************** 
+WOUT:
+    LATD.0=1
+    LATD.1=1
+    Shiftout  portd.3 , portd.1, 5, [OUTPUTS2,OUTPUTS1,OUTPUTS0]
+    LATD.2=1
+    pauseus 2
+    USBService
+    LATD.2=0
+return
+
+' ************************************************************
+' * wait for USB interface to attach                         *
+' ************************************************************
+DoUSBOut:
+
+    select case idtx
+        caSE 1
+            USBBufferCount = USBBufferSizeTX              ' TX buffer size
+            epTX=1 
+        CASE 2
+            USBBufferCount = USBMediaTX                   ' TX buffer size
+            epTX=2
+        CASE 3
+            USBBufferCount = USBkeyTX                     ' TX buffer size
+            epTX=2
+    END SELECT
+   
+   USBService                                    ' keep connection alive
+   USBOut epTX, USBBuffer, USBBufferCount, DoUSBOut ' if bus available, transmit data
+   'gosub Erusb
+   Toggle porta.6
+return
+
+RPOV:
+    ;P1Keys.1 'up
+    ;P1Keys.2 'down
+    ;P1Keys.3 'left
+    ;P1Keys.4 'right
+    POV1=0  
+    if P1keys.3 then
+        if P1keys.2 then
+            POV1=6
+        elseif P1keys.1 then
+            POV1=8
+        else
+            pov1=7
+        endif 
+        goto RPOV2
+    endif
+    if P1keys.2 then
+        if P1keys.4 then
+            POV1=4
+        else
+            pov1=5
+        endif
+        goto RPOV2
+    endif 
+    if P1keys.4 then
+        if P1keys.1 then
+            POV1=2
+        else
+            pov1=3
+        endif
+        goto RPOV2
+    endif 
+    if P1keys.1 then
+        if P1keys.3 then
+            POV1=8
+        else
+            pov1=1
+        endif
+    endif
+RPOV2:
+    POV2=0
+    if P2keys.3 then
+        if P2keys.2 then
+            POV2=6
+        elseif P2keys.1 then
+            POV2=8
+        else
+            pov2=7
+        endif 
+        return
+    endif
+    if P2keys.2 then
+        if P2keys.4 then
+            POV2=4
+        else
+            pov2=5
+        endif
+        return
+    endif 
+    if P2keys.4 then
+        if P2keys.1 then
+            POV2=2
+        else
+            pov2=3
+        endif
+        return
+    endif 
+    if P2keys.1 then
+        if P2keys.3 then
+            POV2=8
+        else
+            pov2=1
+        endif
+    endif       
+return
+
+disable
+SerialIn:
+
+resume 
